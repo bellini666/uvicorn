@@ -1,4 +1,5 @@
 import asyncio
+from unittest import mock
 
 import pytest
 
@@ -120,6 +121,40 @@ def test_lifespan_on_with_error():
         assert lifespan.error_occured
         assert lifespan.should_exit
         await lifespan.shutdown()
+
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(test())
+    loop.close()
+
+
+@pytest.mark.parametrize("mode", ("auto", "on"))
+def test_lifespan_on_when_app_is_cancelled(mode):
+    started: asyncio.Queue[bool] = asyncio.Queue()
+
+    async def app(scope, receive, send):
+        started.put_nowait(True)
+        await receive()
+        pytest.fail("Should be cancelled before it gets here.")
+
+    async def test():
+        config = Config(app=app, lifespan=mode)
+        lifespan = LifespanOn(config)
+
+        loop = asyncio.get_event_loop()
+        main_lifespan_task = loop.create_task(lifespan.main())
+
+        started_response = await started.get()
+        assert started_response
+        assert not lifespan.shutdown_event.is_set()
+
+        with mock.patch.object(lifespan, "logger") as logger:
+            main_lifespan_task.cancel()
+            await main_lifespan_task
+
+        assert not lifespan.error_occured
+        logger.info.assert_called_with("Lifespan task cancelled.")
+        assert lifespan.startup_event.is_set()
+        assert lifespan.shutdown_event.is_set()
 
     loop = asyncio.new_event_loop()
     loop.run_until_complete(test())
